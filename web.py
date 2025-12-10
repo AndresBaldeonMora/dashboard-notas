@@ -3,7 +3,7 @@ import numpy as np
 import json
 import re
 import unicodedata
-import os
+from collections import defaultdict
 
 # --- CONSTANTES ---
 CSV_FILES = [
@@ -14,7 +14,6 @@ CSV_FILES = [
 ]
 OUTPUT_HTML_FILE = "index.html"
 NOTA_APROBATORIA = 11
-MIN_CURSOS_JALADOS = 3  # Mínimo de cursos jalados para mostrar
 
 
 def limpieza_agresiva(texto: str) -> str:
@@ -40,58 +39,75 @@ def cargar_y_limpiar_datos(filepath: str) -> pd.DataFrame:
     return df
 
 
-
-
-
-def preparar_alumnos_criticos(df: pd.DataFrame) -> list:
-    """Prepara lista de alumnos con 3 o más cursos desaprobados."""
-    df_desaprobados = df[df["PFINAL"] < NOTA_APROBATORIA]
+def detectar_cursos_repetidos() -> list:
+    """
+    Detecta alumnos que reprobaron el mismo curso 2 o más veces en diferentes periodos.
+    Compara solo CSVs de la misma facultad (Biologia con Biologia, Veterinaria con Veterinaria).
+    """
+    # Agrupar por facultad
+    biologia_files = [f for f in CSV_FILES if "Biologia" in f]
+    veterinaria_files = [f for f in CSV_FILES if "Veterinaria" in f]
     
-    # Contar cursos jalados por alumno
-    conteo = df_desaprobados.groupby("Alumno").size()
-    alumnos_criticos = conteo[conteo >= MIN_CURSOS_JALADOS].index.tolist()
+    resultados = []
     
-    # Obtener detalles de cada alumno crítico
-    resultado = []
-    for alumno in alumnos_criticos:
-        cursos_jalados = df_desaprobados[df_desaprobados["Alumno"] == alumno][["Curso", "PFINAL"]].to_dict("records")
-        resultado.append({
-            "nombre": alumno,
-            "total_jalados": len(cursos_jalados),
-            "cursos": cursos_jalados
-        })
+    # Procesar cada facultad
+    for facultad_files in [biologia_files, veterinaria_files]:
+        if len(facultad_files) < 2:
+            continue
+            
+        # Diccionario: alumno -> curso -> [(periodo, nota)]
+        historial = defaultdict(lambda: defaultdict(list))
+        
+        # Recopilar todos los datos de la facultad
+        for csv_file in facultad_files:
+            periodo = csv_file.replace(".csv", "")
+            df = cargar_y_limpiar_datos(csv_file)
+            df_reprobados = df[df["PFINAL"] < NOTA_APROBATORIA]
+            
+            for _, row in df_reprobados.iterrows():
+                alumno = row["Alumno"]
+                curso = row["Curso"]
+                nota = row["PFINAL"]
+                historial[alumno][curso].append({
+                    "periodo": periodo,
+                    "nota": nota
+                })
+        
+        # Buscar cursos repetidos (2+ veces)
+        for alumno, cursos in historial.items():
+            for curso, registros in cursos.items():
+                if len(registros) >= 2:
+                    resultados.append({
+                        "alumno": alumno,
+                        "curso": curso,
+                        "veces_jalado": len(registros),
+                        "periodos": registros
+                    })
     
-    # Ordenar por cantidad de cursos jalados (mayor a menor)
-    resultado.sort(key=lambda x: x["total_jalados"], reverse=True)
+    # Ordenar por cantidad de veces jalado (mayor a menor)
+    resultados.sort(key=lambda x: x["veces_jalado"], reverse=True)
     
-    return resultado
-
-
-
+    return resultados
 
 
 def generar_dashboard_html() -> str:
-    data_por_csv = {}
-
-    for csv_file in CSV_FILES:
-        try:
-            df = cargar_y_limpiar_datos(csv_file)
-            alumnos_criticos = preparar_alumnos_criticos(df)
-            
-            data_por_csv[csv_file] = {
-                "alumnos_criticos": alumnos_criticos
-            }
-        except Exception as e:
-            print(f"⚠️ Error procesando {csv_file}: {e}")
-
-    data_json_global = json.dumps(data_por_csv, default=lambda o: int(o) if isinstance(o, (np.integer, int, float)) else str(o))
+    print("🔍 Detectando cursos repetidos entre periodos académicos...")
+    alumnos_repetidores = detectar_cursos_repetidos()
+    
+    data_json = json.dumps(alumnos_repetidores, default=lambda o: int(o) if isinstance(o, (np.integer, int, float)) else str(o))
+    
+    total_casos = len(alumnos_repetidores)
+    alumnos_unicos = len(set(a["alumno"] for a in alumnos_repetidores))
+    
+    print(f"✅ Encontrados {total_casos} casos de cursos repetidos")
+    print(f"👥 {alumnos_unicos} alumnos únicos afectados")
 
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard Académico - Alumnos en Riesgo</title>
+<title>Alumnos con Cursos Repetidos</title>
 <style>
 :root {{
     --bg:#f8fafc; --card:#fff; --text:#1e293b; --muted:#64748b;
@@ -105,21 +121,22 @@ header {{
     background:var(--card); padding:24px; border-bottom:1px solid var(--border);
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }}
-main {{ padding:32px; max-width: 1200px; margin: 0 auto; }}
-select {{
-    padding:10px 16px; border-radius:8px; border:1px solid var(--border);
-    font-size: 15px; cursor: pointer; background: white;
-    min-width: 300px; font-family: inherit;
-}}
-select:focus {{ outline: 2px solid var(--primary); outline-offset: 2px; border-color: var(--primary); }}
+header h1 {{ margin: 0 0 8px 0; font-size: 24px; }}
+header p {{ margin: 0; color: var(--muted); font-size: 14px; }}
+main {{ padding:32px; max-width: 1400px; margin: 0 auto; }}
+
 .stats {{
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
     gap:16px; margin:24px 0;
 }}
-.card {{
+.stat-card {{
     background:var(--card); border:1px solid var(--border); border-radius:10px;
-    padding:16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    padding:20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }}
+.stat-card h3 {{ margin:0 0 8px 0; font-size:13px; color:var(--muted); 
+                 text-transform: uppercase; letter-spacing: 0.5px; }}
+.stat-card .num {{ font-size:36px; font-weight:700; color:var(--danger); }}
+
 table {{
     width:100%; border-collapse:collapse;
     background: var(--card); border-radius: 8px; overflow: hidden;
@@ -131,10 +148,14 @@ th {{ background:#f1f5f9; font-weight: 600; font-size: 13px; color: var(--muted)
 td {{ border-bottom:1px solid var(--border); font-size: 14px; }}
 tr:hover {{ background: #f8fafc; }}
 tr:last-child td {{ border-bottom: none; }}
+
 .badge {{
-    display: inline-block; padding: 4px 10px; border-radius: 12px;
+    display: inline-block; padding: 5px 12px; border-radius: 12px;
     font-size: 12px; font-weight: 600; background: var(--danger);
-    color: white;
+    color: white; margin-right: 4px;
+}}
+.badge-warning {{
+    background: var(--warning);
 }}
 .btn {{
     padding: 6px 14px; border-radius: 6px; border: none;
@@ -146,6 +167,7 @@ tr:last-child td {{ border-bottom: none; }}
 
 section {{ margin-bottom: 40px; }}
 section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var(--text); }}
+
 /* Modal */
 .modal {{
     display: none; position: fixed; z-index: 1000; left: 0; top: 0;
@@ -154,7 +176,7 @@ section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var
 }}
 .modal-content {{
     background: var(--card); margin: 5% auto; padding: 0;
-    width: 90%; max-width: 600px; border-radius: 12px;
+    width: 90%; max-width: 700px; border-radius: 12px;
     box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
     animation: slideDown 0.3s;
 }}
@@ -169,13 +191,17 @@ section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var
 }}
 .close:hover {{ color: var(--text); }}
 .modal-body {{ padding: 24px; max-height: 60vh; overflow-y: auto; }}
-.curso-item {{
-    padding: 12px; border-radius: 8px; background: #f8fafc;
-    margin-bottom: 8px; display: flex; justify-content: space-between;
-    align-items: center;
+
+.periodo-item {{
+    padding: 14px 16px; border-radius: 8px; background: #f8fafc;
+    margin-bottom: 10px; border-left: 4px solid var(--danger);
 }}
-.curso-nombre {{ font-weight: 500; color: var(--text); }}
-.curso-nota {{ font-weight: 700; color: var(--danger); font-size: 18px; }}
+.periodo-header {{
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 4px;
+}}
+.periodo-nombre {{ font-weight: 600; color: var(--text); font-size: 15px; }}
+.periodo-nota {{ font-weight: 700; color: var(--danger); font-size: 20px; }}
 
 @keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
 @keyframes slideDown {{ from {{ transform: translateY(-20px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
@@ -183,16 +209,24 @@ section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var
 </head>
 <body>
 <header>
-    <h1>📊 Alumnos con 3 o más cursos desaprobados</h1>
-    <select id="archivo-select" style="margin-top:16px;">
-        <option value="">-- Selecciona un periodo académico --</option>
-        {''.join([f'<option value="{f}">{f}</option>' for f in CSV_FILES])}
-    </select>
+    <h1>🔁 Alumnos con Cursos Repetidos</h1>
+    <p>Detección automática de alumnos que reprobaron el mismo curso en 2 o más periodos académicos</p>
 </header>
 
 <main>
+    <div class="stats">
+        <div class="stat-card">
+            <h3>Total de Casos</h3>
+            <div class="num" id="total-casos">{total_casos}</div>
+        </div>
+        <div class="stat-card">
+            <h3>Alumnos Afectados</h3>
+            <div class="num" id="total-alumnos">{alumnos_unicos}</div>
+        </div>
+    </div>
+
     <section>
-        <h2>Alumnos en Riesgo Académico (≥3 cursos jalados)</h2>
+        <h2>Listado de Cursos Repetidos</h2>
         <div id="tabla-container"></div>
     </section>
 </main>
@@ -209,62 +243,65 @@ section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var
 </div>
 
 <script>
-const DATA = {data_json_global};
+const DATA = {data_json};
 
-const archivoSelect = document.getElementById("archivo-select");
 const tablaContainer = document.getElementById("tabla-container");
 const modal = document.getElementById("modal");
 const modalTitulo = document.getElementById("modal-titulo");
 const modalBody = document.getElementById("modal-body");
 const closeModal = document.querySelector(".close");
 
-archivoSelect.addEventListener("change", e => {{
-    const file = e.target.value;
-    if (!file) {{
-        tablaContainer.innerHTML = "";
-        return;
-    }}
-    mostrarTabla(file);
-}});
+function init() {{
+    mostrarTabla();
+}}
 
-function mostrarTabla(file) {{
-    const alumnos = DATA[file].alumnos_criticos;
-    if (!alumnos || alumnos.length === 0) {{
-        tablaContainer.innerHTML = '<div class="no-data">✓ No hay alumnos con 3 o más cursos desaprobados en este periodo</div>';
+function mostrarTabla() {{
+    if (!DATA || DATA.length === 0) {{
+        tablaContainer.innerHTML = '<div class="no-data">✓ No se encontraron alumnos con cursos repetidos</div>';
         return;
     }}
+    
     let html = `<table>
         <thead><tr>
-            <th style="width:60px;">#</th>
+            <th style="width:50px;">#</th>
             <th>Alumno</th>
-            <th style="width:180px; text-align:center;">Cursos Jalados</th>
-            <th style="width:140px; text-align:center;">Acción</th>
+            <th>Curso</th>
+            <th style="width:150px; text-align:center;">Veces Jalado</th>
+            <th style="width:120px; text-align:center;">Acción</th>
         </tr></thead>
         <tbody>`;
     
-    alumnos.forEach((a, idx) => {{
+    DATA.forEach((item, idx) => {{
+        const badgeClass = item.veces_jalado >= 3 ? 'badge' : 'badge badge-warning';
         html += `<tr>
             <td style="text-align:center; color:var(--muted);">${{idx + 1}}</td>
-            <td>${{a.nombre}}</td>
-            <td style="text-align:center;"><span class="badge">${{a.total_jalados}} cursos</span></td>
-            <td style="text-align:center;"><button class="btn" onclick="verDetalle('${{a.nombre.replace(/'/g, "\\\\'")}}', '${{file}}')">Ver Detalle</button></td>
+            <td>${{item.alumno}}</td>
+            <td><strong>${{item.curso}}</strong></td>
+            <td style="text-align:center;">
+                <span class="${{badgeClass}}">${{item.veces_jalado}} veces</span>
+            </td>
+            <td style="text-align:center;">
+                <button class="btn" onclick="verDetalle(${{idx}})">Ver Periodos</button>
+            </td>
         </tr>`;
     }});
     
     tablaContainer.innerHTML = html + '</tbody></table>';
 }}
 
-function verDetalle(nombreAlumno, file) {{
-    const alumno = DATA[file].alumnos_criticos.find(a => a.nombre === nombreAlumno);
-    if (!alumno) return;
+function verDetalle(index) {{
+    const item = DATA[index];
+    if (!item) return;
     
-    modalTitulo.textContent = `${{alumno.nombre}} (${{alumno.total_jalados}} cursos jalados)`;
+    modalTitulo.textContent = `${{item.alumno}} - ${{item.curso}}`;
     
-    let html = '';
-    alumno.cursos.forEach(c => {{
-        html += `<div class="curso-item">
-            <span class="curso-nombre">${{c.Curso}}</span>
-            <span class="curso-nota">${{c.PFINAL}}</span>
+    let html = '<p style="margin-bottom:16px; color:var(--muted);">Historial de desaprobaciones:</p>';
+    item.periodos.forEach(p => {{
+        html += `<div class="periodo-item">
+            <div class="periodo-header">
+                <span class="periodo-nombre">${{p.periodo}}</span>
+                <span class="periodo-nota">${{p.nota}}</span>
+            </div>
         </div>`;
     }});
     
@@ -274,6 +311,9 @@ function verDetalle(nombreAlumno, file) {{
 
 closeModal.onclick = () => {{ modal.style.display = "none"; }};
 window.onclick = e => {{ if (e.target === modal) modal.style.display = "none"; }};
+
+// Inicializar al cargar la página
+init();
 </script>
 </body>
 </html>
@@ -281,12 +321,11 @@ window.onclick = e => {{ if (e.target === modal) modal.style.display = "none"; }
 
 
 def main():
-    print("🚀 Generando dashboard HTML con alumnos en riesgo académico...")
+    print("🚀 Generando dashboard de cursos repetidos...")
     html = generar_dashboard_html()
     with open(OUTPUT_HTML_FILE, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"✅ Dashboard generado: {OUTPUT_HTML_FILE}")
-    print(f"📌 Mostrando solo alumnos con {MIN_CURSOS_JALADOS}+ cursos desaprobados")
 
 
 if __name__ == "__main__":
