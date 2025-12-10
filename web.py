@@ -12,8 +12,9 @@ CSV_FILES = [
     "2025-1-Biologia.csv",
     "2025-1-Medicina Veterinaria.csv"
 ]
-OUTPUT_HTML_FILE = "dashboard_final.html"
+OUTPUT_HTML_FILE = "index.html"
 NOTA_APROBATORIA = 11
+MIN_CURSOS_JALADOS = 3  # Mínimo de cursos jalados para mostrar
 
 
 def limpieza_agresiva(texto: str) -> str:
@@ -39,37 +40,34 @@ def cargar_y_limpiar_datos(filepath: str) -> pd.DataFrame:
     return df
 
 
-def calcular_kpis(df: pd.DataFrame) -> dict:
-    """Calcula KPIs considerando promedio por alumno (no por registro)."""
-    promedio_por_alumno = df.groupby("Alumno")["PFINAL"].mean()
-    total_alumnos = len(promedio_por_alumno)
-    promedio_general = df["PFINAL"].mean()
-    aprobados = int((promedio_por_alumno >= NOTA_APROBATORIA).sum())
-    desaprobados = int((promedio_por_alumno < NOTA_APROBATORIA).sum())
-
-    return {
-        "total_alumnos": int(total_alumnos),
-        "promedio_general": f"{promedio_general:.2f}",
-        "aprobados": aprobados,
-        "desaprobados": desaprobados,
-    }
 
 
-def preparar_datos_tabla(df: pd.DataFrame) -> str:
-    df_desaprobados = df[df["PFINAL"] < NOTA_APROBATORIA][["Curso", "Alumno", "PFINAL"]]
-    datos_agrupados = {curso: grupo.to_dict("records") for curso, grupo in df_desaprobados.groupby("Curso")}
-    return json.dumps(datos_agrupados)
+
+def preparar_alumnos_criticos(df: pd.DataFrame) -> list:
+    """Prepara lista de alumnos con 3 o más cursos desaprobados."""
+    df_desaprobados = df[df["PFINAL"] < NOTA_APROBATORIA]
+    
+    # Contar cursos jalados por alumno
+    conteo = df_desaprobados.groupby("Alumno").size()
+    alumnos_criticos = conteo[conteo >= MIN_CURSOS_JALADOS].index.tolist()
+    
+    # Obtener detalles de cada alumno crítico
+    resultado = []
+    for alumno in alumnos_criticos:
+        cursos_jalados = df_desaprobados[df_desaprobados["Alumno"] == alumno][["Curso", "PFINAL"]].to_dict("records")
+        resultado.append({
+            "nombre": alumno,
+            "total_jalados": len(cursos_jalados),
+            "cursos": cursos_jalados
+        })
+    
+    # Ordenar por cantidad de cursos jalados (mayor a menor)
+    resultado.sort(key=lambda x: x["total_jalados"], reverse=True)
+    
+    return resultado
 
 
-def preparar_datos_grafico(df: pd.DataFrame) -> dict:
-    conteo = (
-        df[df["PFINAL"] < NOTA_APROBATORIA]
-        .groupby("Curso")["Alumno"]
-        .count()
-        .sort_values(ascending=False)
-        .head(10)
-    )
-    return {"labels": list(conteo.index), "values": list(conteo.values)}
+
 
 
 def generar_dashboard_html() -> str:
@@ -78,161 +76,204 @@ def generar_dashboard_html() -> str:
     for csv_file in CSV_FILES:
         try:
             df = cargar_y_limpiar_datos(csv_file)
-            kpis = calcular_kpis(df)
-            datos_tabla_json = preparar_datos_tabla(df)
-            grafico = preparar_datos_grafico(df)
-            kpis = {k: (int(v) if isinstance(v, (np.int64, np.int32)) else v) for k, v in kpis.items()}
+            alumnos_criticos = preparar_alumnos_criticos(df)
+            
             data_por_csv[csv_file] = {
-                "kpis": kpis,
-                "datos": json.loads(datos_tabla_json),
-                "grafico": grafico
+                "alumnos_criticos": alumnos_criticos
             }
         except Exception as e:
             print(f"⚠️ Error procesando {csv_file}: {e}")
 
     data_json_global = json.dumps(data_por_csv, default=lambda o: int(o) if isinstance(o, (np.integer, int, float)) else str(o))
 
-    return f"""
-<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard Académico</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<title>Dashboard Académico - Alumnos en Riesgo</title>
 <style>
 :root {{
     --bg:#f8fafc; --card:#fff; --text:#1e293b; --muted:#64748b;
-    --primary:#2563eb; --border:#e2e8f0; --danger:#dc2626;
+    --primary:#2563eb; --border:#e2e8f0; --danger:#dc2626; --warning:#f59e0b;
 }}
+* {{ box-sizing: border-box; }}
 body {{
     margin:0; font-family:Inter,sans-serif; background:var(--bg); color:var(--text);
 }}
 header {{
-    background:var(--card); padding:20px; border-bottom:1px solid var(--border);
+    background:var(--card); padding:24px; border-bottom:1px solid var(--border);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }}
-main {{ padding:24px; }}
+main {{ padding:32px; max-width: 1200px; margin: 0 auto; }}
 select {{
-    padding:8px 12px; border-radius:6px; border:1px solid var(--border);
+    padding:10px 16px; border-radius:8px; border:1px solid var(--border);
+    font-size: 15px; cursor: pointer; background: white;
+    min-width: 300px; font-family: inherit;
 }}
+select:focus {{ outline: 2px solid var(--primary); outline-offset: 2px; border-color: var(--primary); }}
 .stats {{
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
-    gap:12px; margin:20px 0;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    gap:16px; margin:24px 0;
 }}
 .card {{
     background:var(--card); border:1px solid var(--border); border-radius:10px;
-    padding:12px 16px;
-}}
-.card h3 {{ margin:0; font-size:14px; color:var(--muted); }}
-.card .num {{ font-size:26px; font-weight:700; }}
-canvas {{
-    width:100% !important; max-height:400px;
+    padding:16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }}
 table {{
-    width:100%; border-collapse:collapse; margin-top:10px;
+    width:100%; border-collapse:collapse;
+    background: var(--card); border-radius: 8px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }}
-th,td {{ padding:10px; border-bottom:1px solid var(--border); text-align:left; }}
-th {{ background:#f1f5f9; }}
-td.nota-desaprobada {{ color:var(--danger); font-weight:600; }}
-.no-data {{ color:var(--muted); text-align:center; padding:20px; }}
+th,td {{ padding:14px 18px; text-align:left; }}
+th {{ background:#f1f5f9; font-weight: 600; font-size: 13px; color: var(--muted); 
+     text-transform: uppercase; letter-spacing: 0.5px; }}
+td {{ border-bottom:1px solid var(--border); font-size: 14px; }}
+tr:hover {{ background: #f8fafc; }}
+tr:last-child td {{ border-bottom: none; }}
+.badge {{
+    display: inline-block; padding: 4px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: 600; background: var(--danger);
+    color: white;
+}}
+.btn {{
+    padding: 6px 14px; border-radius: 6px; border: none;
+    background: var(--primary); color: white; cursor: pointer;
+    font-size: 13px; font-weight: 500; transition: all 0.2s;
+}}
+.btn:hover {{ background: #1d4ed8; transform: translateY(-1px); }}
+.no-data {{ color:var(--muted); text-align:center; padding:60px 20px; font-size: 15px; }}
+
+section {{ margin-bottom: 40px; }}
+section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var(--text); }}
+/* Modal */
+.modal {{
+    display: none; position: fixed; z-index: 1000; left: 0; top: 0;
+    width: 100%; height: 100%; background: rgba(0,0,0,0.5);
+    animation: fadeIn 0.2s;
+}}
+.modal-content {{
+    background: var(--card); margin: 5% auto; padding: 0;
+    width: 90%; max-width: 600px; border-radius: 12px;
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+    animation: slideDown 0.3s;
+}}
+.modal-header {{
+    padding: 20px 24px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+}}
+.modal-header h2 {{ margin: 0; font-size: 18px; font-weight: 600; }}
+.close {{
+    font-size: 28px; font-weight: 300; color: var(--muted);
+    cursor: pointer; line-height: 1; transition: color 0.2s;
+}}
+.close:hover {{ color: var(--text); }}
+.modal-body {{ padding: 24px; max-height: 60vh; overflow-y: auto; }}
+.curso-item {{
+    padding: 12px; border-radius: 8px; background: #f8fafc;
+    margin-bottom: 8px; display: flex; justify-content: space-between;
+    align-items: center;
+}}
+.curso-nombre {{ font-weight: 500; color: var(--text); }}
+.curso-nota {{ font-weight: 700; color: var(--danger); font-size: 18px; }}
+
+@keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+@keyframes slideDown {{ from {{ transform: translateY(-20px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 </style>
 </head>
 <body>
 <header>
-    <h1>📊 Dashboard de Notas Académicas</h1>
-    <p>Selecciona el archivo CSV a analizar:</p>
-    <select id="archivo-select">
-        <option value="">-- Selecciona un archivo --</option>
+    <h1>📊 Alumnos con 3 o más cursos desaprobados</h1>
+    <select id="archivo-select" style="margin-top:16px;">
+        <option value="">-- Selecciona un periodo académico --</option>
         {''.join([f'<option value="{f}">{f}</option>' for f in CSV_FILES])}
     </select>
 </header>
 
 <main>
-    <section class="stats" id="kpi-container"></section>
     <section>
-        <canvas id="grafico-desaprobados"></canvas>
-    </section>
-    <section>
-        <label for="curso-select"><b>Filtrar por curso:</b></label>
-        <select id="curso-select"></select>
+        <h2>Alumnos en Riesgo Académico (≥3 cursos jalados)</h2>
         <div id="tabla-container"></div>
     </section>
 </main>
 
+<!-- Modal -->
+<div id="modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="modal-titulo"></h2>
+            <span class="close">&times;</span>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+    </div>
+</div>
+
 <script>
 const DATA = {data_json_global};
-let chart = null;
 
 const archivoSelect = document.getElementById("archivo-select");
-const cursoSelect = document.getElementById("curso-select");
 const tablaContainer = document.getElementById("tabla-container");
-const kpiContainer = document.getElementById("kpi-container");
-const ctx = document.getElementById("grafico-desaprobados").getContext("2d");
+const modal = document.getElementById("modal");
+const modalTitulo = document.getElementById("modal-titulo");
+const modalBody = document.getElementById("modal-body");
+const closeModal = document.querySelector(".close");
 
 archivoSelect.addEventListener("change", e => {{
     const file = e.target.value;
-    if (!file) return;
-    mostrarKpis(file);
-    llenarCursos(file);
-    dibujarGrafico(file);
-    tablaContainer.innerHTML = "";
-}});
-
-function mostrarKpis(file) {{
-    const k = DATA[file].kpis;
-    kpiContainer.innerHTML = `
-        <div class="card"><h3>Promedio General</h3><div class="num">${{k.promedio_general}}</div></div>
-        <div class="card"><h3>Total Alumnos</h3><div class="num">${{k.total_alumnos}}</div></div>
-        <div class="card"><h3>Alumnos Aprobados</h3><div class="num">${{k.aprobados}}</div></div>
-        <div class="card"><h3>Alumnos Desaprobados</h3><div class="num">${{k.desaprobados}}</div></div>`;
-}}
-
-function llenarCursos(file) {{
-    const cursos = Object.keys(DATA[file].datos);
-    cursoSelect.innerHTML = '<option value="">-- Selecciona un curso --</option>' + cursos.map(c => `<option>${{c}}</option>`).join('');
-    cursoSelect.onchange = e => mostrarTabla(file, e.target.value);
-}}
-
-function mostrarTabla(file, curso) {{
-    const alumnos = DATA[file].datos[curso];
-    if (!alumnos || alumnos.length === 0) {{
-        tablaContainer.innerHTML = '<div class="no-data">No hay desaprobados en este curso.</div>';
+    if (!file) {{
+        tablaContainer.innerHTML = "";
         return;
     }}
-    let html = '<table><thead><tr><th>Alumno</th><th>Nota Final</th></tr></thead><tbody>';
-    alumnos.forEach(a => {{
-        html += `<tr><td>${{a.Alumno}}</td><td class="nota-desaprobada">${{a.PFINAL}}</td></tr>`;
+    mostrarTabla(file);
+}});
+
+function mostrarTabla(file) {{
+    const alumnos = DATA[file].alumnos_criticos;
+    if (!alumnos || alumnos.length === 0) {{
+        tablaContainer.innerHTML = '<div class="no-data">✓ No hay alumnos con 3 o más cursos desaprobados en este periodo</div>';
+        return;
+    }}
+    let html = `<table>
+        <thead><tr>
+            <th style="width:60px;">#</th>
+            <th>Alumno</th>
+            <th style="width:180px; text-align:center;">Cursos Jalados</th>
+            <th style="width:140px; text-align:center;">Acción</th>
+        </tr></thead>
+        <tbody>`;
+    
+    alumnos.forEach((a, idx) => {{
+        html += `<tr>
+            <td style="text-align:center; color:var(--muted);">${{idx + 1}}</td>
+            <td>${{a.nombre}}</td>
+            <td style="text-align:center;"><span class="badge">${{a.total_jalados}} cursos</span></td>
+            <td style="text-align:center;"><button class="btn" onclick="verDetalle('${{a.nombre.replace(/'/g, "\\\\'")}}', '${{file}}')">Ver Detalle</button></td>
+        </tr>`;
     }});
+    
     tablaContainer.innerHTML = html + '</tbody></table>';
 }}
 
-function dibujarGrafico(file) {{
-    const g = DATA[file].grafico;
-    if (chart) chart.destroy();
-    chart = new Chart(ctx, {{
-        type: "bar",
-        data: {{
-            labels: g.labels,
-            datasets: [{{
-                label: "Cantidad de Desaprobados",
-                data: g.values,
-                backgroundColor: "#ef4444"
-            }}]
-        }},
-        options: {{
-            plugins: {{
-                legend: {{ display: false }},
-                title: {{
-                    display: true,
-                    text: "Top 10 cursos con más desaprobados"
-                }}
-            }},
-            scales: {{
-                y: {{ beginAtZero: true }}
-            }}
-        }}
+function verDetalle(nombreAlumno, file) {{
+    const alumno = DATA[file].alumnos_criticos.find(a => a.nombre === nombreAlumno);
+    if (!alumno) return;
+    
+    modalTitulo.textContent = `${{alumno.nombre}} (${{alumno.total_jalados}} cursos jalados)`;
+    
+    let html = '';
+    alumno.cursos.forEach(c => {{
+        html += `<div class="curso-item">
+            <span class="curso-nombre">${{c.Curso}}</span>
+            <span class="curso-nota">${{c.PFINAL}}</span>
+        </div>`;
     }});
+    
+    modalBody.innerHTML = html;
+    modal.style.display = "block";
 }}
+
+closeModal.onclick = () => {{ modal.style.display = "none"; }};
+window.onclick = e => {{ if (e.target === modal) modal.style.display = "none"; }};
 </script>
 </body>
 </html>
@@ -240,11 +281,12 @@ function dibujarGrafico(file) {{
 
 
 def main():
-    print("Generando dashboard HTML con KPIs reales de alumnos...")
+    print("🚀 Generando dashboard HTML con alumnos en riesgo académico...")
     html = generar_dashboard_html()
     with open(OUTPUT_HTML_FILE, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"✅ Dashboard generado: {OUTPUT_HTML_FILE}")
+    print(f"📌 Mostrando solo alumnos con {MIN_CURSOS_JALADOS}+ cursos desaprobados")
 
 
 if __name__ == "__main__":
