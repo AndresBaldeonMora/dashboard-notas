@@ -14,6 +14,7 @@ CSV_FILES = [
 ]
 OUTPUT_HTML_FILE = "index.html"
 NOTA_APROBATORIA = 11
+MIN_VECES_REPETIDO = 2  # Mínimo de veces que debe repetirse un curso
 
 
 def limpieza_agresiva(texto: str) -> str:
@@ -41,18 +42,21 @@ def cargar_y_limpiar_datos(filepath: str) -> pd.DataFrame:
 
 def detectar_cursos_repetidos() -> list:
     """
-    Detecta alumnos que reprobaron el mismo curso 2 o más veces en diferentes periodos.
+    Detecta alumnos que reprobaron el mismo curso 3 o más veces en diferentes periodos.
     Compara solo CSVs de la misma facultad (Biologia con Biologia, Veterinaria con Veterinaria).
+    Retorna: Lista con cada alumno UNA sola vez, incluyendo TODOS sus cursos repetidos.
     """
     # Agrupar por facultad
     biologia_files = [f for f in CSV_FILES if "Biologia" in f]
     veterinaria_files = [f for f in CSV_FILES if "Veterinaria" in f]
     
-    resultados = []
+    # Diccionario: alumno -> [{curso, veces, periodos}]
+    alumnos_con_repeticiones = {}
     
     # Procesar cada facultad
     for facultad_files in [biologia_files, veterinaria_files]:
-        if len(facultad_files) < 2:
+        if len(facultad_files) < MIN_VECES_REPETIDO:
+            print(f"⚠️ Advertencia: Solo hay {len(facultad_files)} periodos. No es posible detectar {MIN_VECES_REPETIDO}+ repeticiones.")
             continue
             
         # Diccionario: alumno -> curso -> [(periodo, nota)]
@@ -73,41 +77,55 @@ def detectar_cursos_repetidos() -> list:
                     "nota": nota
                 })
         
-        # Buscar cursos repetidos (2+ veces)
+        # Buscar cursos repetidos (3+ veces) y agrupar por alumno
         for alumno, cursos in historial.items():
+            cursos_repetidos = []
+            
             for curso, registros in cursos.items():
-                if len(registros) >= 2:
-                    resultados.append({
-                        "alumno": alumno,
+                if len(registros) >= MIN_VECES_REPETIDO:
+                    cursos_repetidos.append({
                         "curso": curso,
                         "veces_jalado": len(registros),
                         "periodos": registros
                     })
+            
+            # Si el alumno tiene al menos un curso repetido 3+ veces
+            if cursos_repetidos:
+                # Calcular total de repeticiones
+                total_repeticiones = sum(c["veces_jalado"] for c in cursos_repetidos)
+                
+                alumnos_con_repeticiones[alumno] = {
+                    "alumno": alumno,
+                    "total_cursos_repetidos": len(cursos_repetidos),
+                    "total_repeticiones": total_repeticiones,
+                    "cursos": cursos_repetidos
+                }
     
-    # Ordenar por cantidad de veces jalado (mayor a menor)
-    resultados.sort(key=lambda x: x["veces_jalado"], reverse=True)
+    # Convertir a lista y ordenar por total de repeticiones (mayor a menor)
+    resultados = list(alumnos_con_repeticiones.values())
+    resultados.sort(key=lambda x: x["total_repeticiones"], reverse=True)
     
     return resultados
 
 
 def generar_dashboard_html() -> str:
-    print("🔍 Detectando cursos repetidos entre periodos académicos...")
+    print("🔍 Detectando cursos repetidos 3+ veces entre periodos académicos...")
     alumnos_repetidores = detectar_cursos_repetidos()
     
     data_json = json.dumps(alumnos_repetidores, default=lambda o: int(o) if isinstance(o, (np.integer, int, float)) else str(o))
     
-    total_casos = len(alumnos_repetidores)
-    alumnos_unicos = len(set(a["alumno"] for a in alumnos_repetidores))
+    total_alumnos = len(alumnos_repetidores)
+    total_casos = sum(a["total_cursos_repetidos"] for a in alumnos_repetidores)
     
-    print(f"✅ Encontrados {total_casos} casos de cursos repetidos")
-    print(f"👥 {alumnos_unicos} alumnos únicos afectados")
+    print(f"✅ Encontrados {total_alumnos} alumnos con cursos repetidos 3+ veces")
+    print(f"📊 Total de casos: {total_casos} cursos diferentes repetidos")
 
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Alumnos con Cursos Repetidos</title>
+<title>Alumnos con Cursos Repetidos 3+ Veces</title>
 <style>
 :root {{
     --bg:#f8fafc; --card:#fff; --text:#1e293b; --muted:#64748b;
@@ -209,24 +227,24 @@ section h2 {{ font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var
 </head>
 <body>
 <header>
-    <h1>🔁 Alumnos con Cursos Repetidos</h1>
-    <p>Detección automática de alumnos que reprobaron el mismo curso en 2 o más periodos académicos</p>
+    <h1>🔁 Alumnos con Cursos Repetidos (3+ veces)</h1>
+    <p>Detección de alumnos que reprobaron el mismo curso en 3 o más periodos académicos</p>
 </header>
 
 <main>
     <div class="stats">
         <div class="stat-card">
-            <h3>Total de Casos</h3>
-            <div class="num" id="total-casos">{total_casos}</div>
+            <h3>Alumnos Afectados</h3>
+            <div class="num" id="total-alumnos">{total_alumnos}</div>
         </div>
         <div class="stat-card">
-            <h3>Alumnos Afectados</h3>
-            <div class="num" id="total-alumnos">{alumnos_unicos}</div>
+            <h3>Total Cursos Repetidos</h3>
+            <div class="num" id="total-casos">{total_casos}</div>
         </div>
     </div>
 
     <section>
-        <h2>Listado de Cursos Repetidos</h2>
+        <h2>Listado de Alumnos en Riesgo Crítico</h2>
         <div id="tabla-container"></div>
     </section>
 </main>
@@ -257,7 +275,7 @@ function init() {{
 
 function mostrarTabla() {{
     if (!DATA || DATA.length === 0) {{
-        tablaContainer.innerHTML = '<div class="no-data">✓ No se encontraron alumnos con cursos repetidos</div>';
+        tablaContainer.innerHTML = '<div class="no-data">✓ No se encontraron alumnos con cursos repetidos 3+ veces</div>';
         return;
     }}
     
@@ -265,23 +283,25 @@ function mostrarTabla() {{
         <thead><tr>
             <th style="width:50px;">#</th>
             <th>Alumno</th>
-            <th>Curso</th>
-            <th style="width:150px; text-align:center;">Veces Jalado</th>
-            <th style="width:120px; text-align:center;">Acción</th>
+            <th style="width:200px; text-align:center;">Cursos Repetidos</th>
+            <th style="width:180px; text-align:center;">Total Repeticiones</th>
+            <th style="width:140px; text-align:center;">Acción</th>
         </tr></thead>
         <tbody>`;
     
-    DATA.forEach((item, idx) => {{
-        const badgeClass = item.veces_jalado >= 3 ? 'badge' : 'badge badge-warning';
+    DATA.forEach((alumno, idx) => {{
+        const badgeClass = alumno.total_repeticiones >= 10 ? 'badge' : 'badge badge-warning';
         html += `<tr>
             <td style="text-align:center; color:var(--muted);">${{idx + 1}}</td>
-            <td>${{item.alumno}}</td>
-            <td><strong>${{item.curso}}</strong></td>
+            <td><strong>${{alumno.alumno}}</strong></td>
             <td style="text-align:center;">
-                <span class="${{badgeClass}}">${{item.veces_jalado}} veces</span>
+                <span class="badge">${{alumno.total_cursos_repetidos}} cursos</span>
             </td>
             <td style="text-align:center;">
-                <button class="btn" onclick="verDetalle(${{idx}})">Ver Periodos</button>
+                <span class="${{badgeClass}}">${{alumno.total_repeticiones}} veces</span>
+            </td>
+            <td style="text-align:center;">
+                <button class="btn" onclick="verDetalle(${{idx}})">Ver Detalle</button>
             </td>
         </tr>`;
     }});
@@ -290,19 +310,33 @@ function mostrarTabla() {{
 }}
 
 function verDetalle(index) {{
-    const item = DATA[index];
-    if (!item) return;
+    const alumno = DATA[index];
+    if (!alumno) return;
     
-    modalTitulo.textContent = `${{item.alumno}} - ${{item.curso}}`;
+    modalTitulo.textContent = `${{alumno.alumno}} - ${{alumno.total_cursos_repetidos}} curso(s) repetido(s)`;
     
-    let html = '<p style="margin-bottom:16px; color:var(--muted);">Historial de desaprobaciones:</p>';
-    item.periodos.forEach(p => {{
-        html += `<div class="periodo-item">
-            <div class="periodo-header">
-                <span class="periodo-nombre">${{p.periodo}}</span>
-                <span class="periodo-nota">${{p.nota}}</span>
-            </div>
-        </div>`;
+    let html = '<p style="margin-bottom:20px; color:var(--muted); font-size:14px;">Historial completo de cursos repetidos 3+ veces:</p>';
+    
+    alumno.cursos.forEach((curso, idx) => {{
+        html += `
+        <div style="margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0; font-size:16px; font-weight:600; color:var(--text);">
+                    ${{idx + 1}}. ${{curso.curso}}
+                </h3>
+                <span class="badge" style="font-size:13px;">${{curso.veces_jalado}} veces</span>
+            </div>`;
+        
+        curso.periodos.forEach(p => {{
+            html += `<div class="periodo-item">
+                <div class="periodo-header">
+                    <span class="periodo-nombre">${{p.periodo}}</span>
+                    <span class="periodo-nota">${{p.nota}}</span>
+                </div>
+            </div>`;
+        }});
+        
+        html += '</div>';
     }});
     
     modalBody.innerHTML = html;
@@ -321,11 +355,13 @@ init();
 
 
 def main():
-    print("🚀 Generando dashboard de cursos repetidos...")
+    print("🚀 Generando dashboard de cursos repetidos 3+ veces...")
     html = generar_dashboard_html()
     with open(OUTPUT_HTML_FILE, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"✅ Dashboard generado: {OUTPUT_HTML_FILE}")
+    print(f"⚠️ NOTA: Con solo 2 periodos por facultad, no es posible detectar 3+ repeticiones.")
+    print(f"💡 Necesitas agregar más CSVs o conectar a la intranet para obtener historial completo.")
 
 
 if __name__ == "__main__":
